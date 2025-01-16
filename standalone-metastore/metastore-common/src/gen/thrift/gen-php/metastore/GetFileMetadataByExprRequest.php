@@ -105,13 +105,13 @@ class GetFileMetadataByExprRequest
                 case 1:
                     if ($ftype == TType::LST) {
                         $this->fileIds = array();
-                        $_size936 = 0;
-                        $_etype939 = 0;
-                        $xfer += $input->readListBegin($_etype939, $_size936);
-                        for ($_i940 = 0; $_i940 < $_size936; ++$_i940) {
-                            $elem941 = null;
-                            $xfer += $input->readI64($elem941);
-                            $this->fileIds []= $elem941;
+                        $_size971 = 0;
+                        $_etype974 = 0;
+                        $xfer += $input->readListBegin($_etype974, $_size971);
+                        for ($_i975 = 0; $_i975 < $_size971; ++$_i975) {
+                            $elem976 = null;
+                            $xfer += $input->readI64($elem976);
+                            $this->fileIds []= $elem976;
                         }
                         $xfer += $input->readListEnd();
                     } else {
@@ -159,8 +159,8 @@ class GetFileMetadataByExprRequest
             }
             $xfer += $output->writeFieldBegin('fileIds', TType::LST, 1);
             $output->writeListBegin(TType::I64, count($this->fileIds));
-            foreach ($this->fileIds as $iter942) {
-                $xfer += $output->writeI64($iter942);
+            foreach ($this->fileIds as $iter977) {
+                $xfer += $output->writeI64($iter977);
             }
             $output->writeListEnd();
             $xfer += $output->writeFieldEnd();

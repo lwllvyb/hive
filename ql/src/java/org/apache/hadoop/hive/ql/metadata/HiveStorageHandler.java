@@ -20,10 +20,12 @@ package org.apache.hadoop.hive.ql.metadata;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Collections;
 import org.apache.hadoop.conf.Configurable;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.hive.common.classification.InterfaceAudience;
 import org.apache.hadoop.hive.common.classification.InterfaceStability;
 import org.apache.hadoop.hive.common.type.SnapshotContext;
@@ -36,23 +38,30 @@ import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.LockType;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.Context.Operation;
 import org.apache.hadoop.hive.ql.ddl.DDLOperationContext;
 import org.apache.hadoop.hive.ql.ErrorMsg;
 import org.apache.hadoop.hive.ql.ddl.table.AbstractAlterTableDesc;
 import org.apache.hadoop.hive.ql.ddl.table.AlterTableType;
+import org.apache.hadoop.hive.ql.ddl.table.create.CreateTableDesc;
 import org.apache.hadoop.hive.ql.ddl.table.create.like.CreateTableLikeDesc;
+import org.apache.hadoop.hive.ql.exec.ColumnInfo;
 import org.apache.hadoop.hive.ql.hooks.WriteEntity;
 import org.apache.hadoop.hive.ql.io.StorageFormatDescriptor;
+import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
 import org.apache.hadoop.hive.ql.parse.AlterTableSnapshotRefSpec;
 import org.apache.hadoop.hive.ql.parse.AlterTableExecuteSpec;
+import org.apache.hadoop.hive.ql.parse.DeleteSemanticAnalyzer;
 import org.apache.hadoop.hive.ql.parse.StorageFormat.StorageHandlerTypes;
 import org.apache.hadoop.hive.ql.parse.TransformSpec;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
-import org.apache.hadoop.hive.ql.plan.ColumnStatsDesc;
+import org.apache.hadoop.hive.ql.parse.UpdateSemanticAnalyzer;
+import org.apache.hadoop.hive.ql.plan.PartitionAwareOptimizationCtx;
 import org.apache.hadoop.hive.ql.plan.DynamicPartitionCtx;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.FileSinkDesc;
+import org.apache.hadoop.hive.ql.plan.MergeTaskProperties;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.ql.security.authorization.HiveAuthorizationProvider;
@@ -66,6 +75,7 @@ import org.apache.hadoop.mapred.OutputFormat;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 
 /**
@@ -96,23 +106,23 @@ public interface HiveStorageHandler extends Configurable {
   /**
    * @return Class providing an implementation of {@link InputFormat}
    */
-  public Class<? extends InputFormat> getInputFormatClass();
+  Class<? extends InputFormat> getInputFormatClass();
 
   /**
    * @return Class providing an implementation of {@link OutputFormat}
    */
-  public Class<? extends OutputFormat> getOutputFormatClass();
+  Class<? extends OutputFormat> getOutputFormatClass();
 
   /**
    * @return Class providing an implementation of {@link AbstractSerDe}
    */
-  public Class<? extends AbstractSerDe> getSerDeClass();
+  Class<? extends AbstractSerDe> getSerDeClass();
 
   /**
    * @return metadata hook implementation, or null if this
    * storage handler does not need any metadata notifications
    */
-  public HiveMetaHook getMetaHook();
+  HiveMetaHook getMetaHook();
 
   /**
    * Returns the implementation specific authorization provider
@@ -120,8 +130,7 @@ public interface HiveStorageHandler extends Configurable {
    * @return authorization provider
    * @throws HiveException
    */
-  public HiveAuthorizationProvider getAuthorizationProvider()
-    throws HiveException;
+  HiveAuthorizationProvider getAuthorizationProvider() throws HiveException;
 
   /**
    * This method is called to allow the StorageHandlers the chance
@@ -140,14 +149,13 @@ public interface HiveStorageHandler extends Configurable {
    * @param jobProperties receives properties copied or transformed
    * from the table properties
    */
-  public abstract void configureInputJobProperties(TableDesc tableDesc,
-    Map<String, String> jobProperties);
+  void configureInputJobProperties(TableDesc tableDesc, Map<String, String> jobProperties);
 
   /**
    * This method is called to allow the StorageHandlers the chance to
    * populate secret keys into the job's credentials.
    */
-  public abstract void configureInputJobCredentials(TableDesc tableDesc, Map<String, String> secrets);
+  void configureInputJobCredentials(TableDesc tableDesc, Map<String, String> secrets);
 
   /**
    * This method is called to allow the StorageHandlers the chance
@@ -166,8 +174,7 @@ public interface HiveStorageHandler extends Configurable {
    * @param jobProperties receives properties copied or transformed
    * from the table properties
    */
-  public abstract void configureOutputJobProperties(TableDesc tableDesc,
-    Map<String, String> jobProperties);
+  void configureOutputJobProperties(TableDesc tableDesc, Map<String, String> jobProperties);
 
   /**
    * Deprecated use configureInputJobProperties/configureOutputJobProperties
@@ -182,9 +189,7 @@ public interface HiveStorageHandler extends Configurable {
    * from the table properties
    */
   @Deprecated
-  public void configureTableJobProperties(
-    TableDesc tableDesc,
-    Map<String, String> jobProperties);
+  void configureTableJobProperties(TableDesc tableDesc, Map<String, String> jobProperties);
 
   /**
    * Called just before submitting MapReduce job.
@@ -192,7 +197,7 @@ public interface HiveStorageHandler extends Configurable {
    * @param tableDesc descriptor for the table being accessed
    * @param jobConf jobConf for MapReduce job
    */
-  public void configureJobConf(TableDesc tableDesc, JobConf jobConf);
+  void configureJobConf(TableDesc tableDesc, JobConf jobConf);
 
   /**
    * Used to fetch runtime information about storage handler during DESCRIBE EXTENDED statement
@@ -201,8 +206,7 @@ public interface HiveStorageHandler extends Configurable {
    * @return StorageHandlerInfo containing runtime information about storage handler
    * OR `null` if the storage handler choose to not provide any runtime information.
    */
-  public default StorageHandlerInfo getStorageHandlerInfo(Table table) throws MetaException
-  {
+  default StorageHandlerInfo getStorageHandlerInfo(Table table) throws MetaException {
     return null;
   }
   
@@ -374,6 +378,13 @@ public interface HiveStorageHandler extends Configurable {
   }
 
   /**
+   * Sets tables physical location at create table as select.
+   * Some storage handlers requires specifying the location of tables others generates it internally.
+   */
+  default void setTableLocationForCTAS(CreateTableDesc desc, String location) {
+  }
+
+  /**
    * Extract the native properties of the table which aren't stored in the HMS
    * @param table the table
    * @return map with native table level properties
@@ -385,11 +396,19 @@ public interface HiveStorageHandler extends Configurable {
   /**
    * Returns whether the data should be overwritten for the specific operation.
    * @param mTable the table.
-   * @param operationName operationName of the operation.
+   * @param operation operation type.
    * @return if the data should be overwritten for the specified operation.
    */
-  default boolean shouldOverwrite(org.apache.hadoop.hive.ql.metadata.Table mTable, String operationName) {
+  default boolean shouldOverwrite(org.apache.hadoop.hive.ql.metadata.Table mTable, Context.Operation operation) {
     return false;
+  }
+
+  /**
+   * Adds specific configurations to session for create table command.
+   * @param tblProps table properties
+   * @param hiveConf configuration
+   */
+  default void addResourcesForCreateTable(Map<String, String> tblProps, HiveConf hiveConf) {
   }
 
   enum AcidSupportType {
@@ -413,8 +432,7 @@ public interface HiveStorageHandler extends Configurable {
    *
    * @return the table's ACID support type
    */
-  default AcidSupportType supportsAcidOperations(org.apache.hadoop.hive.ql.metadata.Table table,
-      boolean isWriteOperation) {
+  default AcidSupportType supportsAcidOperations() {
     return AcidSupportType.NONE;
   }
 
@@ -423,7 +441,7 @@ public interface HiveStorageHandler extends Configurable {
    * for tables that support ACID operations.
    *
    * Should only return a non-empty list if
-   * {@link HiveStorageHandler#supportsAcidOperations(org.apache.hadoop.hive.ql.metadata.Table, boolean)} ()} returns something
+   * {@link HiveStorageHandler#supportsAcidOperations()} returns something
    * other NONE.
    *
    * @return the list of ACID virtual columns
@@ -433,8 +451,8 @@ public interface HiveStorageHandler extends Configurable {
   }
 
   /**
-   * {@link org.apache.hadoop.hive.ql.parse.UpdateDeleteSemanticAnalyzer} rewrites DELETE/UPDATE queries into INSERT
-   * queries.
+   * {@link UpdateSemanticAnalyzer} rewrites UPDATE and
+   * {@link DeleteSemanticAnalyzer} rewrites DELETE queries into INSERT queries.
    * - DELETE FROM T WHERE A = 32 is rewritten into
    * INSERT INTO T SELECT &lt;selectCols&gt; FROM T WHERE A = 32 SORT BY &lt;sortCols&gt;.
    * - UPDATE T SET B=12 WHERE A = 32 is rewritten into
@@ -443,7 +461,7 @@ public interface HiveStorageHandler extends Configurable {
    * This method specifies which columns should be injected into the &lt;selectCols&gt; part of the rewritten query.
    *
    * Should only return a non-empty list if
-   * {@link HiveStorageHandler#supportsAcidOperations(org.apache.hadoop.hive.ql.metadata.Table, boolean)} returns something
+   * {@link HiveStorageHandler#supportsAcidOperations()} returns something
    * other NONE.
    *
    * @param table the table which is being deleted/updated/merged into
@@ -454,15 +472,20 @@ public interface HiveStorageHandler extends Configurable {
     return Collections.emptyList();
   }
 
+  default FieldSchema getRowId() {
+    throw new UnsupportedOperationException();
+  }
+
   /**
-   * {@link org.apache.hadoop.hive.ql.parse.UpdateDeleteSemanticAnalyzer} rewrites DELETE/UPDATE queries into INSERT
+   * {@link UpdateSemanticAnalyzer} rewrites UPDATE and
+   * {@link DeleteSemanticAnalyzer} rewrites DELETE queries into INSERT
    * queries. E.g. DELETE FROM T WHERE A = 32 is rewritten into
    * INSERT INTO T SELECT &lt;selectCols&gt; FROM T WHERE A = 32 SORT BY &lt;sortCols&gt;.
    *
    * This method specifies which columns should be injected into the &lt;sortCols&gt; part of the rewritten query.
    *
    * Should only return a non-empty list if
-   * {@link HiveStorageHandler#supportsAcidOperations(org.apache.hadoop.hive.ql.metadata.Table, boolean)} returns something
+   * {@link HiveStorageHandler#supportsAcidOperations()} returns something
    * other NONE.
    *
    * @param table the table which is being deleted/updated/merged into
@@ -523,6 +546,29 @@ public interface HiveStorageHandler extends Configurable {
       throws SemanticException {
     Preconditions.checkState(alwaysUnpartitioned(), "Should only be called for table formats where partitioning " +
         "is not handled by Hive but the table format itself. See alwaysUnpartitioned() method.");
+    return null;
+  }
+
+  /**
+   * Checks whether the table supports Partition-Aware Optimization.
+   * @param table the table
+   * @return true if the table has partition definitions which potentially optimize query plans
+   * @throws SemanticException in case of any error.
+   */
+  default boolean supportsPartitionAwareOptimization(org.apache.hadoop.hive.ql.metadata.Table table)
+      throws SemanticException {
+    return false;
+  }
+
+  /**
+   * Creates a PartitionAwareOptimizationCtx that retains partition definitions applicable to query plan optimization.
+   * Hive can apply special optimization such as Bucket Map Join based on the storage layouts provided by this context.
+   * @param table the table
+   * @return the created PartitionAwareOptimizationCtx, null if this table doesn't support Partition-Aware Optimization
+   * @throws SemanticException in case of any error.
+   */
+  default PartitionAwareOptimizationCtx createPartitionAwareOptimizationContext(
+      org.apache.hadoop.hive.ql.metadata.Table table) throws SemanticException {
     return null;
   }
 
@@ -661,6 +707,23 @@ public interface HiveStorageHandler extends Configurable {
   default SnapshotContext getCurrentSnapshotContext(org.apache.hadoop.hive.ql.metadata.Table table) {
     return null;
   }
+  
+  default void validateCurrentSnapshot(TableDesc tableDesc) {
+  }
+
+  /**
+   * Return snapshot metadata of table snapshots which are newer than the specified.
+   * The specified snapshot is excluded.
+   * @param hmsTable table metadata stored in Hive Metastore
+   * @param since the snapshot preceding the oldest snapshot which should be checked.
+   *              The value null means all should be checked.
+   * @return Iterable of {@link SnapshotContext}.
+   */
+  default Iterable<SnapshotContext> getSnapshotContexts(
+      org.apache.hadoop.hive.ql.metadata.Table hmsTable, SnapshotContext since) {
+    return Collections.emptyList();
+  }
+
 
   /**
    * Alter table operations can rely on this to customize the EnvironmentContext to be used during the alter table
@@ -672,6 +735,18 @@ public interface HiveStorageHandler extends Configurable {
       EnvironmentContext environmentContext) {
   }
 
+  /**
+   * Check the operation type of all snapshots which are newer than the specified. The specified snapshot is excluded.
+   * @deprecated
+   * <br>Use {@link HiveStorageHandler#getSnapshotContexts(org.apache.hadoop.hive.ql.metadata.Table hmsTable, SnapshotContext since)}
+   * and check {@link SnapshotContext.WriteOperationType#APPEND}.equals({@link SnapshotContext#getOperation()}).
+   *
+   * @param hmsTable table metadata stored in Hive Metastore
+   * @param since the snapshot preceding the oldest snapshot which should be checked.
+   *              The value null means all should be checked.
+   * @return null if table is empty, true if all snapshots are {@link SnapshotContext.WriteOperationType#APPEND}s, false otherwise.
+   */
+  @Deprecated
   default Boolean hasAppendsOnly(org.apache.hadoop.hive.ql.metadata.Table hmsTable, SnapshotContext since) {
     return null;
   }
@@ -687,4 +762,179 @@ public interface HiveStorageHandler extends Configurable {
     throw new UnsupportedOperationException("Storage handler does not support show partitions command");
   }
 
+  /**
+   * Validates that the provided partitionSpec is a valid according to the current table partitioning.
+   * @param hmsTable {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param partitionSpec Map of Strings {@link java.util.Map} partition specification
+   */
+  default void validatePartSpec(org.apache.hadoop.hive.ql.metadata.Table hmsTable, Map<String, String> partitionSpec)
+      throws SemanticException {
+    validatePartSpec(hmsTable, partitionSpec, Context.RewritePolicy.DEFAULT);
+  }
+
+  /**
+   * Validates that the provided partitionSpec is a valid according to the current table partitioning.
+   * @param hmsTable {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param partitionSpec Map of Strings {@link java.util.Map} partition specification
+   * @param policy {@link org.apache.hadoop.hive.ql.Context.RewritePolicy} compaction rewrite policy
+   */
+  default void validatePartSpec(org.apache.hadoop.hive.ql.metadata.Table hmsTable, Map<String, String> partitionSpec,
+      Context.RewritePolicy policy) throws SemanticException {
+    throw new UnsupportedOperationException("Storage handler does not support validation of partition values");
+  }
+
+  default boolean canUseTruncate(org.apache.hadoop.hive.ql.metadata.Table hmsTable, Map<String, String> partitionSpec)
+      throws SemanticException {
+    return true;
+  }
+
+  /**
+   * Checks if a given table and partition specifications are eligible for compaction.
+   * @param table {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param partitionSpec Map of Strings {@link java.util.Map} partition specification
+   * @return Optional of ErrorMsg {@link org.apache.hadoop.hive.ql.ErrorMsg}
+   */
+  default Optional<ErrorMsg> isEligibleForCompaction(org.apache.hadoop.hive.ql.metadata.Table table,
+      Map<String, String> partitionSpec) {
+    throw new UnsupportedOperationException("Storage handler does not support validating eligibility for compaction");
+  }
+
+  /**
+   * Returns partitions names for the current table spec that correspond to the provided partition spec.
+   * @param hmsTable {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param partitionSpec Map of Strings {@link java.util.Map} partition specification
+   * @return List of partition names
+   */
+  default List<String> getPartitionNames(org.apache.hadoop.hive.ql.metadata.Table hmsTable,
+      Map<String, String> partitionSpec) throws SemanticException {
+    throw new UnsupportedOperationException("Storage handler does not support getting partition names");
+  }
+
+  default ColumnInfo getColumnInfo(org.apache.hadoop.hive.ql.metadata.Table hmsTable, String colName)
+      throws SemanticException {
+    throw new UnsupportedOperationException("Storage handler does not support getting column type " +
+            "for a specific column.");
+  }
+
+  default boolean canPerformMetadataDelete(org.apache.hadoop.hive.ql.metadata.Table hmsTable, String branchName,
+    SearchArgument searchArgument) {
+    return false;
+  }
+  default List<FieldSchema> getPartitionKeys(org.apache.hadoop.hive.ql.metadata.Table hmsTable, boolean latestSpecOnly) {
+    throw new UnsupportedOperationException("Storage handler does not support getting partition keys " +
+            "for a table.");
+  }
+
+  /**
+   * Returns a list of partitions with the latest partition spec which contain any files whose content falls under 
+   * the provided filter condition.
+   * @param hmsTable {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param filter Iceberg filter expression
+   * @return List of Partitions {@link org.apache.hadoop.hive.ql.metadata.Partition}
+   */
+  default List<Partition> getPartitionsByExpr(org.apache.hadoop.hive.ql.metadata.Table hmsTable, ExprNodeDesc filter)
+          throws SemanticException {
+    throw new UnsupportedOperationException("Storage handler does not support getting partitions by expression " +
+            "for a table.");
+  }
+
+  /**
+   * Returns a list of partitions which contain any files whose content falls under the provided filter condition.
+   * @param hmsTable {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param filter Iceberg filter expression
+   * @param latestSpecOnly When true, returns partitions with the latest partition spec, else with the older specs only.
+   * @return List of Partitions {@link org.apache.hadoop.hive.ql.metadata.Partition}
+   */
+  default List<Partition> getPartitionsByExpr(org.apache.hadoop.hive.ql.metadata.Table hmsTable,
+                                              ExprNodeDesc filter, boolean latestSpecOnly) throws SemanticException {
+    throw new UnsupportedOperationException("Storage handler does not support getting partitions " +
+        "by generic expressions");
+  }
+
+  /**
+   * Returns partition based on table and partition specification.
+   * @param table {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param partitionSpec Map of Strings {@link java.util.Map} partition specification
+   * @return Partition {@link org.apache.hadoop.hive.ql.metadata.Partition} 
+   * @throws SemanticException {@link org.apache.hadoop.hive.ql.parse.SemanticException} 
+   */
+  default Partition getPartition(org.apache.hadoop.hive.ql.metadata.Table table, Map<String, String> partitionSpec)
+      throws SemanticException {
+    return getPartition(table, partitionSpec, Context.RewritePolicy.DEFAULT);
+  }
+
+  /**
+   * Returns partition based on table and partition specification.
+   * @param table {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param partitionSpec Map of Strings {@link java.util.Map} partition specification
+   * @param policy {@link org.apache.hadoop.hive.ql.Context.RewritePolicy} compaction rewrite policy
+   * @return Partition {@link org.apache.hadoop.hive.ql.metadata.Partition}
+   * @throws SemanticException {@link org.apache.hadoop.hive.ql.parse.SemanticException}
+   */
+  default Partition getPartition(org.apache.hadoop.hive.ql.metadata.Table table, Map<String, String> partitionSpec,
+      Context.RewritePolicy policy) throws SemanticException {
+    throw new UnsupportedOperationException("Storage handler does not support getting partition for a table.");
+  }
+
+  /**
+   * Returns a list of partitions with the latest partition spec based on table and partial partition specification.
+   * @param table {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param partitionSpec Map of Strings {@link java.util.Map} partition specification
+   * @return List of Partitions {@link org.apache.hadoop.hive.ql.metadata.Partition}
+   * @throws SemanticException {@link org.apache.hadoop.hive.ql.parse.SemanticException}
+   */
+  default List<Partition> getPartitions(org.apache.hadoop.hive.ql.metadata.Table table, 
+      Map<String, String> partitionSpec) throws SemanticException {
+    return getPartitions(table, partitionSpec, true);
+  }
+
+  /**
+   * Returns a list of partitions based on table and partial partition specification.
+   * @param table {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param partitionSpec Map of Strings {@link java.util.Map} partition specification
+   * @param latestSpecOnly When true, returns partitions with the latest partition spec, else with older specs
+   * @return List of Partitions {@link org.apache.hadoop.hive.ql.metadata.Partition}
+   * @throws SemanticException {@link org.apache.hadoop.hive.ql.parse.SemanticException}
+   */
+  default List<Partition> getPartitions(org.apache.hadoop.hive.ql.metadata.Table table,
+      Map<String, String> partitionSpec, boolean latestSpecOnly) throws SemanticException {
+    throw new UnsupportedOperationException("Storage handler does not support getting partitions for a table.");
+  }
+
+  default boolean isPartitioned(org.apache.hadoop.hive.ql.metadata.Table table) {
+    throw new UnsupportedOperationException("Storage handler does not support checking if table is partitioned.");
+  }
+
+  default boolean hasUndergonePartitionEvolution(org.apache.hadoop.hive.ql.metadata.Table table) {
+    throw new UnsupportedOperationException("Storage handler does not support checking if table " +
+        "undergone partition evolution.");
+  }
+
+  /**
+   * Returns true if the table contain any records matching the filter expression, false otherwise
+   * @param hmsTable {@link org.apache.hadoop.hive.ql.metadata.Table} table metadata stored in Hive Metastore
+   * @param filter Iceberg filter expression
+   * @return boolean 
+   */
+  default boolean hasDataMatchingFilterExpr(org.apache.hadoop.hive.ql.metadata.Table hmsTable, ExprNodeDesc filter) {
+    throw new UnsupportedOperationException("Storage handler does not support checking if filter has any match");
+  }
+
+  default boolean supportsMergeFiles() {
+    return false;
+  }
+
+  default List<FileStatus> getMergeTaskInputFiles(Properties properties) throws IOException {
+    throw new UnsupportedOperationException("Storage handler does not support getting merge input files " +
+            "for a table.");
+  }
+
+  default MergeTaskProperties getMergeTaskProperties(Properties properties) {
+    throw new UnsupportedOperationException("Storage handler does not support getting merge input files " +
+            "for a table.");
+  }
+
+  default void setMergeTaskDeleteProperties(TableDesc tableDesc) {
+    throw new UnsupportedOperationException("Storage handler does not support getting custom delete merge schema.");
+  }
 }

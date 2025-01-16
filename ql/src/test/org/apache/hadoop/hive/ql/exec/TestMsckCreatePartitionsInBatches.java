@@ -18,6 +18,7 @@
 package org.apache.hadoop.hive.ql.exec;
 
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.conf.HiveConfForTest;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.metastore.CheckResult.PartitionResult;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
@@ -62,7 +63,7 @@ public class TestMsckCreatePartitionsInBatches {
 
   @BeforeClass
   public static void setupClass() throws HiveException, MetaException {
-    hiveConf = new HiveConf(TestMsckCreatePartitionsInBatches.class);
+    hiveConf = new HiveConfForTest(TestMsckCreatePartitionsInBatches.class);
     hiveConf.setIntVar(ConfVars.HIVE_MSCK_REPAIR_BATCH_SIZE, 5);
     hiveConf.setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
         "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
@@ -186,7 +187,7 @@ public class TestMsckCreatePartitionsInBatches {
     // batch size of 20 and decaying factor of 2
     msck.createPartitionsInBatches(spyDb, repairOutput, partsNotInMs, table, 20, 2, 0);
     // there should be 1 call to create partitions with batch sizes of 10
-    verify(spyDb, times(1)).add_partitions(Mockito.anyObject(), anyBoolean(), anyBoolean());
+    verify(spyDb, times(1)).add_partitions(Mockito.any(), anyBoolean(), anyBoolean());
     ArgumentCaptor<Boolean> ifNotExistsArg = ArgumentCaptor.forClass(Boolean.class);
     ArgumentCaptor<Boolean> needResultsArg = ArgumentCaptor.forClass(Boolean.class);
     ArgumentCaptor<List<Partition>> argParts = ArgumentCaptor.forClass(List.class);

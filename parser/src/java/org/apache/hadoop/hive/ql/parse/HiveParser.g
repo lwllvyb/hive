@@ -25,7 +25,7 @@ backtrack=false;
 k=3;
 }
 
-import AlterClauseParser, SelectClauseParser, FromClauseParser, IdentifiersParser, ResourcePlanParser, CreateDDLParser, PrepareStatementParser;
+import AlterClauseParser, SelectClauseParser, FromClauseParser, IdentifiersParser, ResourcePlanParser, CreateDDLParser, PrepareStatementParser, ReplClauseParser, LockParser;
 
 tokens {
 TOK_INSERT;
@@ -221,8 +221,10 @@ TOK_ALTERTABLE_SETPARTSPEC;
 TOK_ALTERTABLE_EXECUTE;
 TOK_ALTERTABLE_CREATE_BRANCH;
 TOK_ALTERTABLE_DROP_BRANCH;
+TOK_ALTERTABLE_RENAME_BRANCH;
 TOK_ALTERTABLE_CREATE_TAG;
 TOK_ALTERTABLE_DROP_TAG;
+TOK_ALTERTABLE_REPLACE_SNAPSHOTREF;
 TOK_RETAIN;
 TOK_WITH_SNAPSHOT_RETENTION;
 TOK_ALTERTABLE_CONVERT;
@@ -261,11 +263,8 @@ TOK_TABLEROWFORMATLINES;
 TOK_TABLEROWFORMATNULL;
 TOK_TABLEFILEFORMAT;
 TOK_FILEFORMAT_GENERIC;
-TOK_OFFLINE;
 TOK_ENABLE;
 TOK_DISABLE;
-TOK_READONLY;
-TOK_NO_DROP;
 TOK_STORAGEHANDLER;
 TOK_NOT_CLUSTERED;
 TOK_NOT_SORTED;
@@ -514,6 +513,7 @@ TOK_BUCKET;
 TOK_AS_OF_TIME;
 TOK_AS_OF_VERSION;
 TOK_FROM_VERSION;
+TOK_AS_OF_TAG;
 }
 
 
@@ -593,6 +593,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
     xlateMap.put("KW_EXCEPT", "EXCEPT");
     xlateMap.put("KW_LOAD", "LOAD");
     xlateMap.put("KW_DATA", "DATA");
+    xlateMap.put("KW_OPTIMIZE", "OPTIMIZE");
     xlateMap.put("KW_INPATH", "INPATH");
     xlateMap.put("KW_IS", "IS");
     xlateMap.put("KW_NULL", "NULL");
@@ -973,13 +974,6 @@ loadStatement
     -> ^(TOK_LOAD $path $tab $islocal? $isoverwrite? inputFileFormat?)
     ;
 
-replicationClause
-@init { pushMsg("replication clause", state); }
-@after { popMsg(state); }
-    : KW_FOR (isMetadataOnly=KW_METADATA)? KW_REPLICATION LPAREN (replId=StringLiteral) RPAREN
-    -> ^(TOK_REPLICATION $replId $isMetadataOnly?)
-    ;
-
 exportStatement
 @init { pushMsg("export statement", state); }
 @after { popMsg(state); }
@@ -999,64 +993,6 @@ importStatement
          tableLocation?
     -> ^(TOK_IMPORT $path $tab? $ext? tableLocation?)
     ;
-
-replDumpStatement
-@init { pushMsg("Replication dump statement", state); }
-@after { popMsg(state); }
-      : KW_REPL KW_DUMP
-        (dbPolicy=replDbPolicy)
-        (KW_REPLACE oldDbPolicy=replDbPolicy)?
-        (KW_WITH replConf=replConfigs)?
-    -> ^(TOK_REPL_DUMP $dbPolicy ^(TOK_REPLACE $oldDbPolicy)? $replConf?)
-    ;
-
-replDbPolicy
-@init { pushMsg("Repl dump DB replication policy", state); }
-@after { popMsg(state); }
-    :
-      (dbName=identifier) (DOT tablePolicy=replTableLevelPolicy)? -> $dbName $tablePolicy?
-    ;
-
-replLoadStatement
-@init { pushMsg("Replication load statement", state); }
-@after { popMsg(state); }
-      : KW_REPL KW_LOAD
-      (sourceDbPolicy=replDbPolicy)
-      (KW_INTO dbName=identifier)?
-      (KW_WITH replConf=replConfigs)?
-      -> ^(TOK_REPL_LOAD $sourceDbPolicy ^(TOK_DBNAME $dbName)? $replConf?)
-      ;
-
-replConfigs
-@init { pushMsg("Repl configurations", state); }
-@after { popMsg(state); }
-    :
-      LPAREN replConfigsList RPAREN -> ^(TOK_REPL_CONFIG replConfigsList)
-    ;
-
-replConfigsList
-@init { pushMsg("Repl configurations list", state); }
-@after { popMsg(state); }
-    :
-      keyValueProperty (COMMA keyValueProperty)* -> ^(TOK_REPL_CONFIG_LIST keyValueProperty+)
-    ;
-
-replTableLevelPolicy
-@init { pushMsg("Replication table level policy definition", state); }
-@after { popMsg(state); }
-    :
-      ((replTablesIncludeList=StringLiteral) (DOT replTablesExcludeList=StringLiteral)?)
-      -> ^(TOK_REPL_TABLES $replTablesIncludeList $replTablesExcludeList?)
-    ;
-
-replStatusStatement
-@init { pushMsg("replication status statement", state); }
-@after { popMsg(state); }
-      : KW_REPL KW_STATUS
-        (dbName=identifier)
-        (KW_WITH replConf=replConfigs)?
-      -> ^(TOK_REPL_STATUS $dbName $replConf?)
-      ;
 
 ddlStatement
 @init { pushMsg("ddl statement", state); }
@@ -1084,10 +1020,7 @@ ddlStatement
     | reloadFunctionsStatement
     | dropMacroStatement
     | analyzeStatement
-    | lockStatement
-    | unlockStatement
-    | lockDatabase
-    | unlockDatabase
+    | lockStatements
     | createRoleStatement
     | dropRoleStatement
     | (grantPrivileges) => grantPrivileges
@@ -1373,36 +1306,6 @@ showTablesFilterExpr
     -> ^(TOK_TABLE_TYPE identifier StringLiteral)
     | KW_LIKE showStmtIdentifier|showStmtIdentifier
     -> showStmtIdentifier
-    ;
-
-lockStatement
-@init { pushMsg("lock statement", state); }
-@after { popMsg(state); }
-    : KW_LOCK KW_TABLE tableName partitionSpec? lockMode -> ^(TOK_LOCKTABLE tableName lockMode partitionSpec?)
-    ;
-
-lockDatabase
-@init { pushMsg("lock database statement", state); }
-@after { popMsg(state); }
-    : KW_LOCK (KW_DATABASE|KW_SCHEMA) (dbName=identifier) lockMode -> ^(TOK_LOCKDB $dbName lockMode)
-    ;
-
-lockMode
-@init { pushMsg("lock mode", state); }
-@after { popMsg(state); }
-    : KW_SHARED | KW_EXCLUSIVE
-    ;
-
-unlockStatement
-@init { pushMsg("unlock statement", state); }
-@after { popMsg(state); }
-    : KW_UNLOCK KW_TABLE tableName partitionSpec?  -> ^(TOK_UNLOCKTABLE tableName partitionSpec?)
-    ;
-
-unlockDatabase
-@init { pushMsg("unlock database statement", state); }
-@after { popMsg(state); }
-    : KW_UNLOCK (KW_DATABASE|KW_SCHEMA) (dbName=identifier) -> ^(TOK_UNLOCKDB $dbName)
     ;
 
 createRoleStatement
@@ -2499,9 +2402,7 @@ primitiveType
     | KW_DATETIME      ->    TOK_DATETIME
     | KW_TIMESTAMP     ->    TOK_TIMESTAMP
     | KW_TIMESTAMPLOCALTZ   ->    TOK_TIMESTAMPLOCALTZ
-    //| KW_TIMESTAMPTZ   ->    TOK_TIMESTAMPTZ
     | KW_TIMESTAMP KW_WITH KW_LOCAL KW_TIME KW_ZONE -> TOK_TIMESTAMPLOCALTZ
-    //| KW_TIMESTAMP KW_WITH KW_TIME KW_ZONE -> TOK_TIMESTAMPTZ
     // Uncomment to allow intervals as table column types
     //| KW_INTERVAL KW_YEAR KW_TO KW_MONTH -> TOK_INTERVAL_YEAR_MONTH
     //| KW_INTERVAL KW_DAY KW_TO KW_SECOND -> TOK_INTERVAL_DAY_TIME

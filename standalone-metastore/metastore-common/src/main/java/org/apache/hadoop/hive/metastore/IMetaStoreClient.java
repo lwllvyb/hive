@@ -29,6 +29,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.common.TableName;
 import org.apache.hadoop.hive.common.ValidTxnList;
 import org.apache.hadoop.hive.common.ValidWriteIdList;
 import org.apache.hadoop.hive.common.classification.RetrySemantics;
@@ -141,6 +142,15 @@ public interface IMetaStoreClient extends AutoCloseable {
    */
   void dropCatalog(String catName)
       throws NoSuchObjectException, InvalidOperationException, MetaException, TException;
+
+  /**
+   * Drop a catalog.  Catalogs must be empty to be dropped, there is no cascade for dropping a
+   * catalog.
+   * @param catName name of the catalog to drop
+   * @param ifExists if true, do not throw an error if the catalog does not exist.
+   * @throws TException general thrift exception.
+   */
+  void dropCatalog(String catName, boolean ifExists) throws TException;
 
   /**
    * Get the names of all databases in the default catalog that match the given pattern.
@@ -555,7 +565,10 @@ public interface IMetaStoreClient extends AutoCloseable {
    * @throws MetaException Failure in the RDBMS or storage
    * @throws TException Thrift transport exception
    */
+  @Deprecated
   void truncateTable(String dbName, String tableName, List<String> partNames) throws MetaException, TException;
+
+  void truncateTable(TableName table, List<String> partNames) throws TException;
 
   void truncateTable(String dbName, String tableName, List<String> partNames,
       String validWriteIds, long writeId) throws TException;
@@ -574,6 +587,7 @@ public interface IMetaStoreClient extends AutoCloseable {
    * @throws MetaException Failure in the RDBMS or storage
    * @throws TException Thrift transport exception
    */
+  @Deprecated
   void truncateTable(String catName, String dbName, String tableName, List<String> partNames)
       throws MetaException, TException;
 
@@ -780,7 +794,6 @@ public interface IMetaStoreClient extends AutoCloseable {
    */
   List<Table> getTables(String catName, String dbName, List<String> tableNames, GetProjectionsSpec projectionsSpec)
           throws MetaException, InvalidOperationException, UnknownDBException, TException;
-
   /**
    * Get tables as objects (rather than just fetching their names).  This is more expensive and
    * should only be used if you actually need all the information about the tables.
@@ -3000,9 +3013,17 @@ public interface IMetaStoreClient extends AutoCloseable {
    * @throws MetaException error accessing the RDBMS
    * @throws TException thrift transport error
    */
+  @Deprecated
   List<String> getFunctions(String dbName, String pattern)
       throws MetaException, TException;
 
+  /**
+   * Get all functions matching a pattern
+   * @param functionRequest function request.
+   * @throws TException thrift transport error
+   */
+  GetFunctionsResponse getFunctionsRequest(GetFunctionsRequest functionRequest)
+      throws TException;
   /**
    * Get all functions matching a pattern
    * @param catName catalog name.
@@ -3011,6 +3032,7 @@ public interface IMetaStoreClient extends AutoCloseable {
    * @throws MetaException error accessing the RDBMS
    * @throws TException thrift transport error
    */
+  @Deprecated
   List<String> getFunctions(String catName, String dbName, String pattern)
       throws MetaException, TException;
 
